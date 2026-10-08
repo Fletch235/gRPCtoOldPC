@@ -8,7 +8,7 @@ Wants=llama-server.service
 [Service]
 User=llm
 Group=llm
-ExecStart=/opt/llm/bin/llmd -addr :50051 -llama http://127.0.0.1:8080
+ExecStart=/opt/llm/bin/llmd --addr 127.0.0.1:50051 --llama http://127.0.0.1:8080
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes

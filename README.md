@@ -5,8 +5,8 @@ A small language model running on an old desktop, reachable over gRPC.
 Hardware this is built for: [SPECS.md](SPECS.md) — i5-7400, 8 GB DDR4, GTX 1050 Ti (4 GB).
 
 ```
-terminal client ──gRPC──> Go service ──HTTP──> llama-server ──> GGUF model
-                        (single-flight)      (127.0.0.1 only)   (on the GPU)
+terminal client ──gRPC──> C++ service ──HTTP──> llama-server ──> GGUF model
+                        (single-flight)       (127.0.0.1 only)  (on the GPU)
 ```
 
 ## Output
@@ -41,12 +41,13 @@ rather than waiting, there's no queue and no hidden delay.
 17. Cancellation is not modelled in the payload — Ctrl-C closes the stream, the RPC ends with gRPC status `CANCELLED`, and no `Done` is sent.
 18. That context cancellation is propagated into the HTTP request to `llama-server`, otherwise an abandoned request keeps the GPU busy until it finishes on its own.
 19. The `Done` message reports prompt and completion token counts plus prefill and generation times, which is how you'll measure what the hardware actually delivers.
-20. The server is written in Go using `connect-go`, which serves native gRPC today and gRPC-Web from the same handler later, so the deferred website won't need a proxy.
-21. Single-flight is enforced in the gRPC service with a capacity-1 channel and a non-blocking `select`, because `llama-server` would otherwise queue extra requests invisibly and without bound.
-22. A rejected request returns `RESOURCE_EXHAUSTED` rather than `UNAVAILABLE`, since `UNAVAILABLE` is retried automatically by default and would cause retry storms against an already-saturated machine.
-23. Server reflection is enabled so `grpcurl` works without a copy of the `.proto` file.
-24. Day-to-day use goes through a small purpose-built Go client that prints raw text to stdout and stats to stderr, since `grpcurl` emits one JSON object per token chunk.
-25. TLS, authentication, and network exposure are deliberately deferred and will be addressed together with the website.
+20. Both programs are C++ against gRPC's reference implementation, with `libgrpc++-dev`, `protobuf-compiler-grpc`, `libcurl4-openssl-dev` and `nlohmann-json3-dev` all from `apt` — libcurl and nlohmann/json stand in for the HTTP client and JSON parser the standard library doesn't have, and nothing gets built from source.
+21. The cost of that choice is gRPC-Web: the C++ stack doesn't speak it, so the deferred website will need a proxy such as Envoy in front of this service. Accepted, because the proxy is only needed the day the website exists.
+22. Single-flight is enforced in the service with a `std::mutex` and `try_lock`, which refuses rather than waits, because `llama-server` would otherwise queue extra requests invisibly and without bound.
+23. A rejected request returns `RESOURCE_EXHAUSTED` rather than `UNAVAILABLE`, since `UNAVAILABLE` is retried automatically by default and would cause retry storms against an already-saturated machine.
+24. Server reflection is enabled so `grpcurl` works without a copy of the `.proto` file; it needs `-lgrpc++_reflection` named explicitly, since `grpc++.pc` leaves it out.
+25. Day-to-day use goes through a small purpose-built client that prints raw text to stdout and stats to stderr, since `grpcurl` emits one JSON object per token chunk.
+26. `llmd` binds `127.0.0.1` too, so for now the client reaches it over an SSH tunnel. TLS, authentication, and real network exposure are deliberately deferred and will be addressed together with the website.
 
 ## Layout
 
@@ -54,8 +55,9 @@ rather than waiting, there's no queue and no hidden delay.
 |---|---|
 | [llm/v1/llm.proto](llm/v1/llm.proto) | the contract — decisions 14–19 |
 | [generate.sh](generate.sh) | `protoc` invocation; output lands in `gen/`, which is not committed |
-| [cmd/llmd/main.go](cmd/llmd/main.go) | the gRPC service: single-flight, SSE → stream, cancellation |
-| [cmd/llm/main.go](cmd/llm/main.go) | the terminal client: text to stdout, stats to stderr |
+| [Makefile](Makefile) | `pkg-config` against the apt packages, two binaries into `bin/` |
+| [src/llmd.cpp](src/llmd.cpp) | the service: single-flight, SSE → stream, cancellation |
+| [src/llm.cpp](src/llm.cpp) | the terminal client: text to stdout, stats to stderr |
 | [deploy/](deploy/) | the two systemd units |
 
 ## Deploy
@@ -63,35 +65,21 @@ rather than waiting, there's no queue and no hidden delay.
 Everything below runs over SSH on the old PC. Phases 1–3 (OS, driver,
 llama.cpp, model, benchmark) are already done — see [SPECS.md](SPECS.md).
 
-**Toolchain.** Ubuntu's `apt` Go is too old for `connect-go`, so take the
-official tarball:
+**Toolchain.** All from `apt`, nothing built from source:
 
 ```bash
-ver=$(curl -s 'https://go.dev/VERSION?m=text' | head -1)
-curl -LO "https://go.dev/dl/$ver.linux-amd64.tar.gz"
-sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$ver.linux-amd64.tar.gz"
-echo 'export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin' >> ~/.profile
-. ~/.profile
-go version
+sudo apt install -y build-essential pkg-config git \
+  libgrpc++-dev protobuf-compiler protobuf-compiler-grpc \
+  libcurl4-openssl-dev nlohmann-json3-dev
 ```
 
-**Codegen tools.** `protoc` from `apt`, the two plugins from Go:
-
-```bash
-sudo apt install -y protobuf-compiler git
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
-```
-
-**Build.** `go mod tidy` runs after `generate.sh`, because it resolves the
-imports of the generated packages:
+**Build.** `make` runs `generate.sh` for you when the `.proto` is newer than
+the generated sources:
 
 ```bash
 git clone https://github.com/Fletch235/gRPCtoOldPC.git ~/gRPCtoOldPC
 cd ~/gRPCtoOldPC
-./generate.sh
-go mod tidy
-go build -o bin/ ./cmd/...
+make
 ```
 
 **Install.** An unprivileged system user with no login shell and no home:
@@ -140,11 +128,11 @@ sudo reboot
 systemctl is-active llama-server llmd && llm 'still here?'
 ```
 
-**From your own machine**, point the client at the box — but note that nothing
-is exposed off-host yet, so this needs an SSH tunnel until TLS and auth land
-with the website (decision 25):
+**From your own machine**, tunnel to the box — `llmd` listens on loopback
+only, so this is the only way in until TLS and auth land with the website
+(decision 26):
 
 ```bash
 ssh -N -L 50051:127.0.0.1:50051 <user>@<box-ip> &
-LLM_ADDR=http://localhost:50051 llm 'hello from my laptop'
+LLM_ADDR=localhost:50051 llm 'hello from my laptop'
 ```

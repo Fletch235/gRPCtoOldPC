@@ -2,8 +2,6 @@ syntax = "proto3";
 
 package llm.v1;
 
-option go_package = "github.com/Fletch235/gRPCtoOldPC/gen/llm/v1;llmv1";
-
 service LLM {
   rpc Generate(GenerateRequest) returns (stream GenerateEvent);
 }
