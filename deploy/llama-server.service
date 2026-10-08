@@ -1,0 +1,22 @@
+[Unit]
+Description=llama.cpp inference server
+After=network-online.target
+
+[Service]
+User=llm
+Group=llm
+# /dev/nvidia* is root:video on some driver builds.
+SupplementaryGroups=video
+# No NoNewPrivileges here: nvidia-modprobe is setuid root and creates the device
+# nodes on first use, which NoNewPrivileges would block.
+ExecStart=/opt/llama.cpp/current/llama-server \
+  -m /opt/llama.cpp/models/qwen3-4b-Q4_K_M.gguf \
+  --host 127.0.0.1 --port 8080 \
+  -ngl 99 -c 4096 --parallel 1 -t 4
+Restart=on-failure
+RestartSec=5
+PrivateTmp=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

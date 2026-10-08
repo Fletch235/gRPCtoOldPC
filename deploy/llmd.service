@@ -1,0 +1,20 @@
+[Unit]
+Description=gRPC front end for llama-server
+After=network-online.target llama-server.service
+# Wants, not Requires: llmd answers UNAVAILABLE while the model loads rather
+# than being restarted every time llama-server restarts.
+Wants=llama-server.service
+
+[Service]
+User=llm
+Group=llm
+ExecStart=/opt/llm/bin/llmd -addr :50051 -llama http://127.0.0.1:8080
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

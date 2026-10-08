@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package llm.v1;
+
+option go_package = "github.com/Fletch235/gRPCtoOldPC/gen/llm/v1;llmv1";
+
+service LLM {
+  rpc Generate(GenerateRequest) returns (stream GenerateEvent);
+}
+
+message GenerateRequest {
+  repeated Message messages = 1;
+
+  optional int32  max_tokens  = 2;
+  optional float  temperature = 3;
+  optional float  top_p       = 4;
+  optional uint64 seed        = 5;
+  repeated string stop        = 6;
+}
+
+message Message {
+  Role   role    = 1;
+  string content = 2;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_SYSTEM      = 1;
+  ROLE_USER        = 2;
+  ROLE_ASSISTANT   = 3;
+}
+
+message GenerateEvent {
+  oneof event {
+    Delta delta = 1;
+    Done  done  = 2;
+  }
+}
+
+message Delta {
+  string text = 1;
+}
+
+message Done {
+  FinishReason finish_reason     = 1;
+  int32        prompt_tokens     = 2;
+  int32        completion_tokens = 3;
+  int64        prefill_ms        = 4;
+  int64        generate_ms       = 5;
+}
+
+enum FinishReason {
+  FINISH_REASON_UNSPECIFIED = 0;
+  FINISH_REASON_STOP        = 1;  // EOS or a stop string
+  FINISH_REASON_LENGTH      = 2;  // max_tokens or context limit
+}
